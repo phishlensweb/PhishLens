@@ -1,0 +1,10 @@
+# File: .dockerignore
+# Do not include local junk or secrets in the build context
+node_modules
+npm-debug.log
+.DS_Store
+.git
+.gitignore
+.env
+keys/
+*.local.*
