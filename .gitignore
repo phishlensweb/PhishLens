@@ -1,0 +1,33 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log
+pnpm-lock.yaml
+package-lock.json
+
+# Build outputs
+dist/
+build/
+frontend/dist/
+backend/dist/
+
+# Local env files
+.env
+.env.local
+backend/.env
+frontend/.env
+
+# Logs
+*.log
+
+# OS / Editor files
+.DS_Store
+.vscode/
+.idea/
+
+# Firebase / GCP keys (never commit these)
+*.key.json
+*.pem
+
+# Ignore docker build artifacts
+docker/
