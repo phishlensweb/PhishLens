@@ -12,6 +12,8 @@
  */
 
 const API_ROOT = 'https://generativelanguage.googleapis.com/v1';
+import { trackEvent } from './analytics.js';
+import { logToCloud } from './cloudLogging.js';
 const PREFERRED = [
   'gemini-1.5-pro',
   'gemini-1.5-flash',
@@ -129,6 +131,34 @@ ${JSON.stringify(vision, null, 2)}
   let recommendedAction = 'review';
   if (/\bignore\b/i.test(text)) recommendedAction = 'Ignore';
   else if (/\bflag\b/i.test(text)) recommendedAction = 'Flag';
+
+  const latency = Date.now() - start;
+
+  // Fire-and-forget analytics; don't allow analytics failure to break Gemini flow
+  try {
+    console.log(`[gemini] 📊 Tracking Gemini API call: model="${model}", latencyMs=${latency}, risk=${risk}`);
+    await trackEvent(process.env.GA_CLIENT_ID || 'server', 'gemini_api_call', {
+      model,
+      latencyMs: latency,
+      risk
+    });
+  } catch (e) {
+    console.warn('[gemini] ❌ Analytics track failed', e?.message || e);
+  }
+
+  // Log to Cloud Logging as well
+  try {
+    await logToCloud('gemini-api-requests', {
+      service: 'gemini',
+      action: 'generateContent',
+      model,
+      latencyMs: latency,
+      risk,
+      timestamp: new Date().toISOString()
+    });
+  } catch (e) {
+    console.warn('[gemini] failed to write cloud log', e?.message || e);
+  }
 
   return {
     risk,

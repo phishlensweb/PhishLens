@@ -10,11 +10,22 @@ import { Router } from "express";
 import { colImages, colResults } from "../services/firestore.js";
 import { analyzeVision } from "../services/vision.js";
 import { analyzeGemini } from "../services/gemini.js";
+import { logToCloud } from "../services/cloudLogging.js";
 
 const router = Router();
 
 router.post("/", async (req, res, next) => {
   try {
+    // Log incoming analyze request
+    try {
+      await logToCloud('incoming-requests', {
+        service: 'analyze-route',
+        body: { userId: req.body.userId, imageId: req.body.imageId, source: req.body.source },
+        timestamp: new Date().toISOString()
+      });
+    } catch (e) {
+      console.warn('[analyze] failed to write incoming request log', e?.message || e);
+    }
     const { userId, imageId, source, url, imageBase64 } = req.body;
 
     if (!userId || !imageId || !source) {

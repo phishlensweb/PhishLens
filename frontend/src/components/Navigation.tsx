@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useNavigate } from "react-router-dom";
+import ReactGA from "react-ga4";
+import { trackEvent } from "@/lib/analytics";
 
 export const Navigation = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -12,6 +14,14 @@ export const Navigation = () => {
   const navigate = useNavigate();
 
   const handleSignOut = async () => {
+    // Track Sign Out event
+    ReactGA.event({
+      category: "Authentication",
+      action: "Sign Out",
+      label: user?.email || "Unknown User",
+    });
+    console.log("📊 Tracked Sign Out event");
+    
     await signOut();
     navigate("/");
   };
@@ -49,6 +59,14 @@ export const Navigation = () => {
               to="/about"
               className="text-muted-foreground hover:text-foreground transition-colors"
               activeClassName="text-primary font-medium"
+              onClick={() => {
+                try {
+                  trackEvent("Navigation", "Click", "About Us");
+                  console.log("📊 Tracked Navigation click: About Us");
+                } catch (e) {
+                  console.warn("Failed to track About click", e);
+                }
+              }}
             >
               About Us
             </NavLink>
@@ -105,7 +123,15 @@ export const Navigation = () => {
               to="/about"
               className="block text-muted-foreground hover:text-foreground transition-colors py-2"
               activeClassName="text-primary font-medium"
-              onClick={() => setIsMenuOpen(false)}
+              onClick={() => {
+                setIsMenuOpen(false);
+                try {
+                  trackEvent("Navigation", "Click", "About Us (mobile)");
+                  console.log("📊 Tracked Navigation click: About Us (mobile)");
+                } catch (e) {
+                  console.warn("Failed to track About mobile click", e);
+                }
+              }}
             >
               About Us
             </NavLink>

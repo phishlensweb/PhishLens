@@ -1,6 +1,7 @@
 // src/pages/Auth.tsx
 import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import ReactGA from "react-ga4";
 
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -39,12 +40,36 @@ const Auth = () => {
   }, [user, navigate]);
 
   const handleGoogleSignIn = () => {
+    // Track Google Sign In attempt
+    ReactGA.event({
+      category: "Authentication",
+      action: "Sign In Attempt",
+      label: "Google OAuth",
+    });
+    console.log("📊 Tracked Google Sign In attempt");
+    
     // Kick off Google OAuth flow (backend will redirect to Google)
     window.location.href = `${BACKEND_BASE}/auth/google`;
   };
 
   const handleMockSignIn = async () => {
+    // Track Mock Sign In
+    ReactGA.event({
+      category: "Authentication",
+      action: "Sign In Attempt",
+      label: "Mock Account",
+    });
+    console.log("📊 Tracked Mock Sign In attempt");
+    
     await signInMock("demo@phishlens.dev");
+    
+    // Track successful sign in
+    ReactGA.event({
+      category: "Authentication",
+      action: "Sign In Success",
+      label: "Mock Account",
+    });
+    
     navigate("/dashboard", { replace: true });
   };
 

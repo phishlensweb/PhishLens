@@ -12,6 +12,8 @@ import { Upload as UploadIcon, Image as ImageIcon } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
+import { trackImageUpload, trackApiCall, trackEvent } from "@/lib/analytics";
+
 
 // Backend base URL (local dev)
 // const API_BASE_URL =
@@ -178,6 +180,9 @@ const Upload: React.FC = () => {
 
     try {
       setIsUploading(true);
+      
+      // Track image upload started
+      trackImageUpload("started", file.size);
 
       toast({
         title: "Analyzing image…",
@@ -187,6 +192,7 @@ const Upload: React.FC = () => {
       const { base64, dataUrl } = await fileToBase64AndDataUrl(file);
       const imageId = generateImageId();
 
+      const startTime = performance.now();
       const response = await fetch(`${API_BASE_URL}/analyze`, {
         method: "POST",
         headers: {
@@ -201,15 +207,36 @@ const Upload: React.FC = () => {
           imageBase64: base64,
         }),
       });
+      const duration = performance.now() - startTime;
 
       const data = await response.json();
 
       if (!response.ok) {
+        trackApiCall("Backend", "/analyze", "error", Math.round(duration));
         throw new Error(
           typeof data.error === "string"
             ? data.error
             : JSON.stringify(data.error ?? data)
         );
+      }
+
+      // Track successful API call
+      trackApiCall("Backend", "/analyze", "success", Math.round(duration));
+      trackImageUpload("completed", file.size);
+
+      // If backend returned Gemini or Vision data, track them separately
+      if (data.gemini) {
+        trackEvent(
+          "Gemini",
+          "Analysis Result",
+          `Risk: ${data.gemini?.risk ?? 0}% - ${data.gemini?.reason ?? ""}`,
+          typeof data.gemini?.risk === "number" ? Math.round(data.gemini.risk) : undefined
+        );
+      }
+
+      if (data.vision) {
+        const facesCount = data.vision?.facesCount ?? (data.vision?.faces?.length ?? 0);
+        trackEvent("Vision", "Vision Result", `Faces: ${facesCount}`, facesCount);
       }
 
       const stored = {
@@ -235,6 +262,9 @@ const Upload: React.FC = () => {
 
       navigate(`/analysis/${imageId}`);
     } catch (err: any) {
+      // Track failed upload/analysis
+      trackImageUpload("failed", file.size);
+      
       console.error("Upload/analysis error", err);
       toast({
         title: "Error",
@@ -270,6 +300,9 @@ const Upload: React.FC = () => {
 
     try {
       setIsLoadingPhotos(true);
+      
+      // Track Google Photos connection attempt
+      trackEvent("Google Photos", "Connect Clicked");
 
       // 1) Create a Picker session via backend
       const sessionRes = await fetch(`${API_BASE_URL}/photos/picker/session`, {
@@ -284,7 +317,10 @@ const Upload: React.FC = () => {
       });
 
       const sessionData = await sessionRes.json();
+      // const startTime = performance.now();
+      // const analyzeDuration = performance.now() - startTime;
       if (!sessionRes.ok) {
+        // trackApiCall("Google Photos", "/photos/list-recent", "error", Math.round(duration));
         throw new Error(
           typeof sessionData.error === "string"
             ? sessionData.error
@@ -393,6 +429,7 @@ const Upload: React.FC = () => {
         );
       }
     } catch (err: any) {
+      trackEvent("Google Photos", "Connection Failed", err?.message ?? "Unknown error");
       console.error("Google Photos connect error:", err);
       toast({
         title: "Google Photos error",
@@ -414,6 +451,9 @@ const Upload: React.FC = () => {
 
     try {
       setIsLoadingPhotos(true);
+      
+      // Track load more action
+      trackEvent("Google Photos", "Load More Photos");
 
       const url = `${API_BASE_URL}/photos/list-recent?userId=${encodeURIComponent(
         user.email
@@ -421,11 +461,14 @@ const Upload: React.FC = () => {
 
       console.log("[Google Photos] requesting next page:", url);
 
+      const startTime = performance.now();
       const res = await fetch(url);
+      const duration = performance.now() - startTime;
       const data = await res.json();
       console.log("[Google Photos] next page raw:", data);
 
       if (!res.ok) {
+        trackApiCall("Google Photos", "/photos/list-recent (paginated)", "error", Math.round(duration));
         throw new Error(
           typeof data.error === "string"
             ? data.error
@@ -444,11 +487,16 @@ const Upload: React.FC = () => {
       setPhotos((prev) => [...prev, ...mapped]);
       setPhotosNextPageToken(data.nextPageToken || null);
 
+      // Track successful pagination
+      trackApiCall("Google Photos", "/photos/list-recent (paginated)", "success", Math.round(duration));
+      trackEvent("Google Photos", "Loaded More Photos", `Added ${mapped.length} photos`);
+
       toast({
         title: "Loaded more photos",
         description: `Added ${mapped.length} photo(s).`,
       });
     } catch (err: any) {
+      trackEvent("Google Photos", "Load More Failed", err?.message ?? "Unknown error");
       console.error("Google Photos load more error:", err);
       toast({
         title: "Google Photos error",
@@ -478,6 +526,9 @@ const Upload: React.FC = () => {
 
     try {
       setIsAnalyzingFromPhotos(true);
+      
+      // Track analysis from Google Photos started
+      trackImageUpload("started", 0, "google-photos");
 
       toast({
         title: "Analyzing Google photo…",
@@ -505,12 +556,15 @@ const Upload: React.FC = () => {
       const downloadData = await downloadRes.json();
 
       if (!downloadRes.ok) {
+        trackApiCall("Google Photos", "/photos/download", "error");
         throw new Error(
           typeof downloadData.error === "string"
             ? downloadData.error
             : `HTTP ${downloadRes.status}`
         );
       }
+
+      trackApiCall("Google Photos", "/photos/download", "success");
 
       const filename: string =
         downloadData.filename || photo.filename || "google-photo.jpg";
@@ -524,6 +578,7 @@ const Upload: React.FC = () => {
       const imageId = generateImageId();
 
       // 2) Send to /analyze, same as local upload
+      const startTime = performance.now();
       const analyzeRes = await fetch(`${API_BASE_URL}/analyze`, {
         method: "POST",
         headers: {
@@ -539,15 +594,36 @@ const Upload: React.FC = () => {
           imageBase64,
         }),
       });
+      const analyzeDuration = performance.now() - startTime;
 
       const analyzeData = await analyzeRes.json();
 
       if (!analyzeRes.ok) {
+        trackApiCall("Backend", "/analyze", "error", Math.round(analyzeDuration));
         throw new Error(
           typeof analyzeData.error === "string"
             ? analyzeData.error
             : JSON.stringify(analyzeData.error ?? analyzeData)
         );
+      }
+
+      // Track successful analysis
+      trackApiCall("Backend", "/analyze", "success", Math.round(analyzeDuration));
+      trackImageUpload("completed", imageBase64.length, "google-photos");
+
+      // Track Gemini & Vision results returned from backend for Google Photos flow
+      if (analyzeData.gemini) {
+        trackEvent(
+          "Gemini",
+          "Analysis Result",
+          `Risk: ${analyzeData.gemini?.risk ?? 0}% - ${analyzeData.gemini?.reason ?? ""}`,
+          typeof analyzeData.gemini?.risk === "number" ? Math.round(analyzeData.gemini.risk) : undefined
+        );
+      }
+
+      if (analyzeData.vision) {
+        const facesCount = analyzeData.vision?.facesCount ?? (analyzeData.vision?.faces?.length ?? 0);
+        trackEvent("Vision", "Vision Result", `Faces: ${facesCount}`, facesCount);
       }
 
       // Data URL form for local display / caching
@@ -576,6 +652,9 @@ const Upload: React.FC = () => {
 
       navigate(`/analysis/${imageId}`);
     } catch (err: any) {
+      // Track failed Google Photos analysis
+      trackImageUpload("failed", 0, "google-photos");
+      
       console.error("Google Photos analyze error:", err);
       toast({
         title: "Google Photos error",

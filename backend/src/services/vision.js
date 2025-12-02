@@ -4,6 +4,8 @@
  */
 
 import { ImageAnnotatorClient } from "@google-cloud/vision";
+import { trackEvent } from './analytics.js';
+import { logToCloud } from './cloudLogging.js';
 
 const client = new ImageAnnotatorClient();
 
@@ -72,9 +74,37 @@ export async function analyzeVision({ imageUrl, imageBytes, imageBase64 }) {
       landmarks: (f.landmarks || []).map(normalizeLandmark),
     })) || [];
 
-  return {
-    facesCount: faces.length,
-    faces,
-    latencyMs: Date.now() - started,
-  };
+    const latency = Date.now() - started;
+
+    // Track Vision API call to GA4
+    try {
+      console.log(`[vision] 📊 Tracking Vision API call: facesCount=${faces.length}, latencyMs=${latency}`);
+      await trackEvent(process.env.GA_CLIENT_ID || 'server', 'vision_api_call', {
+        facesCount: faces.length,
+        latencyMs: latency,
+        source: imageUrl ? 'url' : (imageBase64 ? 'base64' : 'bytes')
+      });
+    } catch (e) {
+      console.warn('[vision] ❌ Analytics track failed', e?.message || e);
+    }
+
+    // Write structured log to Google Cloud Logging
+    try {
+      await logToCloud('vision-api-requests', {
+        service: 'vision',
+        action: 'faceDetection',
+        facesCount: faces.length,
+        latencyMs: latency,
+        source: imageUrl ? 'url' : (imageBase64 ? 'base64' : 'bytes'),
+        timestamp: new Date().toISOString()
+      });
+    } catch (e) {
+      console.warn('[vision] failed to write cloud log', e?.message || e);
+    }
+
+    return {
+      facesCount: faces.length,
+      faces,
+      latencyMs: Date.now() - started,
+    };
 }
