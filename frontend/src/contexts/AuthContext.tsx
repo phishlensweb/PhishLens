@@ -1,3 +1,8 @@
+/**
+ * Author: Manasa Somisetty
+ * Project: PhishLens
+ */
+
 // src/contexts/AuthContext.tsx
 import React, {
   createContext,
