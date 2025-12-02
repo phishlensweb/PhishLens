@@ -86,6 +86,105 @@ async function getAuthorizedClientForUser(userIdentifier) {
   return oauth2Client;
 }
 
+const PICKER_BASE_URL = "https://photospicker.googleapis.com/v1";
+
+/**
+ * Helper: for a given user, return a fresh OAuth access token that
+ * has the photospicker.mediaitems.readonly scope.
+ */
+async function getAccessTokenForUser(userIdentifier) {
+  const authClient = await getAuthorizedClientForUser(userIdentifier);
+
+  const accessTokenResp = await authClient.getAccessToken();
+  const accessToken =
+    typeof accessTokenResp === "string"
+      ? accessTokenResp
+      : accessTokenResp?.token;
+
+  if (!accessToken) {
+    const err = new Error(
+      "Failed to obtain access token for Google Photos Picker"
+    );
+    // @ts-ignore
+    err.status = 500;
+    throw err;
+  }
+
+  return accessToken;
+}
+
+/**
+ * POST /photos/picker/session
+ *
+ * Creates a new Google Photos Picker session for the given user and
+ * returns:
+ *  - sessionId: used later to poll for picked media
+ *  - pickerUri: URL your frontend will open so the user can pick photos
+ */
+router.post("/picker/session", async (req, res, next) => {
+  const { userId } = req.body;
+
+  if (!userId || typeof userId !== "string") {
+    return res
+      .status(400)
+      .json({ error: "Missing userId in request body" });
+  }
+
+  try {
+    const accessToken = await getAccessTokenForUser(userId);
+
+    const createResp = await fetch(`${PICKER_BASE_URL}/sessions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      // Minimal PickingSession config: allow up to 10 items.
+      // (You can change maxItemCount to "1" if you only want one photo.)
+      body: JSON.stringify({
+        pickingConfig: {
+          maxItemCount: "10",
+        },
+      }),
+    });
+
+    if (!createResp.ok) {
+      const text = await createResp.text();
+      console.error(
+        "[photos] Picker sessions.create error:",
+        createResp.status,
+        text
+      );
+      return res.status(createResp.status).json({
+        error: "Google Photos Picker sessions.create failed",
+        details: text,
+      });
+    }
+
+    const session = await createResp.json();
+
+    // session.id and session.pickerUri come from the PickingSession resource
+    // https://photospicker.googleapis.com/v1/sessions
+    console.log(
+      "[photos] created picker session",
+      session.id,
+      "expires at",
+      session.expireTime
+    );
+
+    return res.json({
+      sessionId: session.id,
+      pickerUri: session.pickerUri,
+      // optional, might be useful later when we add polling
+      pollingConfig: session.pollingConfig || null,
+      expireTime: session.expireTime || null,
+    });
+  } catch (err) {
+    console.error("[photos] picker/session error:", err);
+    next(err);
+  }
+});
+
 /**
  * GET /photos/list-recent?userId=...&pageToken=...
  *
@@ -263,6 +362,166 @@ router.get("/download", async (req, res, next) => {
     });
   } catch (err) {
     console.error("[photos] download error:", err);
+    next(err);
+  }
+});
+
+/**
+ * GET /photos/picker/media?userId=...&sessionId=...
+ *
+ * - Polls the Picker session to see if the user has finished selecting photos.
+ * - If not done yet → returns { status: "pending", ... }.
+ * - If done → calls mediaItems.list and returns the picked media items.
+ */
+router.get("/picker/media", async (req, res, next) => {
+  const { userId, sessionId } = req.query;
+
+  if (!userId || typeof userId !== "string") {
+    return res.status(400).json({ error: "Missing userId query param" });
+  }
+  if (!sessionId || typeof sessionId !== "string") {
+    return res.status(400).json({ error: "Missing sessionId query param" });
+  }
+
+  try {
+    const accessToken = await getAccessTokenForUser(userId);
+
+    // 1) Check session status: has the user finished picking?
+    const sessionResp = await fetch(
+      `${PICKER_BASE_URL}/sessions/${encodeURIComponent(sessionId)}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    );
+
+    if (!sessionResp.ok) {
+      const text = await sessionResp.text();
+      console.error(
+        "[photos] Picker sessions.get error:",
+        sessionResp.status,
+        text
+      );
+      return res.status(sessionResp.status).json({
+        error: "Google Photos Picker sessions.get failed",
+        details: text,
+      });
+    }
+
+    const session = await sessionResp.json();
+
+    // If user hasn't finished selecting media yet, tell the frontend to keep polling.
+    if (!session.mediaItemsSet) {
+      return res.json({
+        status: "pending",
+        mediaItemsSet: false,
+        pollingConfig: session.pollingConfig || null,
+      });
+    }
+
+    // 2) User has finished selecting → list picked media items
+    const listUrl =
+      `${PICKER_BASE_URL}/mediaItems?` +
+      new URLSearchParams({ sessionId: sessionId }).toString();
+
+    const listResp = await fetch(listUrl, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    if (!listResp.ok) {
+      const text = await listResp.text();
+      console.error(
+        "[photos] Picker mediaItems.list error:",
+        listResp.status,
+        text
+      );
+      return res.status(listResp.status).json({
+        error: "Google Photos Picker mediaItems.list failed",
+        details: text,
+      });
+    }
+
+    const data = await listResp.json();
+
+    const items = Array.isArray(data.mediaItems) ? data.mediaItems : [];
+    console.log(
+      "[photos] Picker mediaItems.list returned",
+      items.length,
+      "items"
+    );
+
+    // For now, just return the raw picked items to the frontend.
+    // Each item has baseUrl, mimeType, id, etc.
+    return res.json({
+      status: "done",
+      mediaItemsSet: true,
+      items,
+      nextPageToken: data.nextPageToken || null,
+    });
+  } catch (err) {
+    console.error("[photos] picker/media error:", err);
+    next(err);
+  }
+});
+
+/**
+ * POST /photos/picker/download
+ *
+ * Body: { userId, baseUrl, filename?, mimeType? }
+ *
+ * Uses the Google Photos Picker API access token to download the chosen
+ * mediaFile.baseUrl and returns it as base64 so we can send it to /analyze.
+ */
+router.post("/picker/download", async (req, res, next) => {
+  const { userId, baseUrl, filename, mimeType } = req.body || {};
+
+  if (!userId || typeof userId !== "string") {
+    return res.status(400).json({ error: "Missing userId in request body" });
+  }
+  if (!baseUrl || typeof baseUrl !== "string") {
+    return res.status(400).json({ error: "Missing baseUrl in request body" });
+  }
+
+  try {
+    const accessToken = await getAccessTokenForUser(userId);
+
+    // Download original bytes using baseUrl from PickedMediaItem
+    const downloadResp = await fetch(`${baseUrl}=d`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    if (!downloadResp.ok) {
+      const text = await downloadResp.text();
+      console.error(
+        "[photos] picker/download error:",
+        downloadResp.status,
+        text
+      );
+      return res.status(downloadResp.status).json({
+        error: "Failed to download picked Google Photos mediaFile",
+        details: text,
+      });
+    }
+
+    const arrayBuffer = await downloadResp.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    const imageBase64 = buffer.toString("base64");
+
+    res.json({
+      filename: filename || "google-photo.jpg",
+      mimeType: mimeType || "image/jpeg",
+      imageBase64,
+    });
+  } catch (err) {
+    console.error("[photos] picker/download handler error:", err);
     next(err);
   }
 });

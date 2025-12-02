@@ -1,5 +1,3 @@
-// src/pages/Upload.tsx
-
 import React, { useState } from "react";
 import { Navigation } from "@/components/Navigation";
 import {
@@ -16,8 +14,27 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
 
 // Backend base URL (local dev)
+// const API_BASE_URL =
+//   import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
+
+// ✅ use proxy in dev, env var in prod
+// const API_BASE_URL =
+//   import.meta.env.MODE === "development"
+//     ? "/api"
+//     : import.meta.env.VITE_API_BASE_URL;
+
 const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
+  import.meta.env.MODE === "development"
+    ? "/api"
+    : "https://phishlens-backend-1087775975982.us-west1.run.app";
+
+if (!API_BASE_URL) {
+  // Helpful runtime log if you ever forget to set it
+  // (in prod this will be undefined if VITE_API_BASE_URL wasn't provided at build time)
+  // eslint-disable-next-line no-console
+  console.error("VITE_API_BASE_URL is not set for this build.");
+}
+
 
 // Convert File -> { base64WithoutPrefix, dataUrlWithPrefix }
 const fileToBase64AndDataUrl = (
@@ -41,12 +58,70 @@ const fileToBase64AndDataUrl = (
 const generateImageId = () =>
   `img_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
-// Shape of the items we get back from /photos/list-recent
+// Shape of the items we get back from the Picker media endpoint
 type GooglePhotoItem = {
   id: string;
   baseUrl: string;
   filename?: string;
   mimeType?: string;
+};
+
+/**
+ * Downscale/compress a base64 image if it’s too large for Firestore.
+ * - maxSize: max width/height in pixels.
+ * - quality: JPEG quality (0–1).
+ */
+const downscaleBase64IfNeeded = async (
+  base64: string,
+  mimeType: string,
+  maxSize = 1024,
+  quality = 0.8
+): Promise<string> => {
+  // Heuristic: if already under ~900k chars, skip (Firestore field limit is ~1,048,487 bytes)
+  if (base64.length < 900_000) {
+    return base64;
+  }
+
+  try {
+    const dataUrl = `data:${mimeType};base64,${base64}`;
+
+    const img = new Image();
+    img.src = dataUrl;
+
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = (err) => reject(err);
+    });
+
+    let { width, height } = img;
+
+    // No need to resize if already small
+    if (width <= maxSize && height <= maxSize) {
+      return base64;
+    }
+
+    const scale = Math.min(maxSize / width, maxSize / height);
+    width = Math.round(width * scale);
+    height = Math.round(height * scale);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return base64;
+
+    ctx.drawImage(img, 0, 0, width, height);
+
+    // Use JPEG for better compression, regardless of original type
+    const compressedDataUrl = canvas.toDataURL("image/jpeg", quality);
+    const [, compressedBase64] = compressedDataUrl.split(",");
+
+    return compressedBase64 || base64;
+  } catch (err) {
+    console.warn("downscaleBase64IfNeeded failed, using original image", err);
+    return base64;
+  }
 };
 
 const Upload: React.FC = () => {
@@ -55,9 +130,8 @@ const Upload: React.FC = () => {
 
   // Google Photos specific state
   const [photos, setPhotos] = useState<GooglePhotoItem[]>([]);
-  const [photosNextPageToken, setPhotosNextPageToken] = useState<string | null>(
-    null
-  );
+  const [photosNextPageToken, setPhotosNextPageToken] =
+    useState<string | null>(null);
   const [isLoadingPhotos, setIsLoadingPhotos] = useState(false);
   const [isAnalyzingFromPhotos, setIsAnalyzingFromPhotos] = useState(false);
   const [hasConnectedPhotos, setHasConnectedPhotos] = useState(false);
@@ -119,7 +193,7 @@ const Upload: React.FC = () => {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          userId: user.id, // tie analysis to logged-in user id
+          userId: user.id,
           imageId,
           source: "upload",
           filename: file.name,
@@ -175,7 +249,11 @@ const Upload: React.FC = () => {
   };
 
   /**
-   * Connect to Google Photos and fetch the first page of recent photos.
+   * Connect to Google Photos using the Picker API:
+   *  1) POST /photos/picker/session -> get { sessionId, pickerUri }
+   *  2) Open pickerUri so user can pick photos in Google Photos
+   *  3) Poll /photos/picker/media until the user finishes picking
+   *  4) Auto-analyze the picked photo(s)
    */
   const handleGooglePhotosConnect = async () => {
     if (!user) {
@@ -188,49 +266,138 @@ const Upload: React.FC = () => {
       return;
     }
 
+    let pickerWindow: Window | null = null;
+
     try {
       setIsLoadingPhotos(true);
 
-      const url = `${API_BASE_URL}/photos/list-recent?userId=${encodeURIComponent(
-        user.email
-      )}`;
+      // 1) Create a Picker session via backend
+      const sessionRes = await fetch(`${API_BASE_URL}/photos/picker/session`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          // backend resolves this via Firestore; email works as user identifier
+          userId: user.email,
+        }),
+      });
 
-      console.log("[Google Photos] requesting:", url);
-
-      const res = await fetch(url);
-      const data = await res.json();
-      console.log("[Google Photos] raw:", data);
-
-      if (!res.ok) {
+      const sessionData = await sessionRes.json();
+      if (!sessionRes.ok) {
         throw new Error(
-          typeof data.error === "string"
-            ? data.error
-            : `HTTP ${res.status}`
+          typeof sessionData.error === "string"
+            ? sessionData.error
+            : `HTTP ${sessionRes.status}`
         );
       }
 
-      const items = (data.items ?? []) as any[];
+      const { sessionId, pickerUri } = sessionData as {
+        sessionId: string;
+        pickerUri: string;
+      };
 
-      const mapped: GooglePhotoItem[] = items.map((item) => ({
-        id: item.id,
-        baseUrl: item.baseUrl,
-        filename: item.filename,
-        mimeType: item.mimeType,
-      }));
+      if (!sessionId || !pickerUri) {
+        throw new Error("Missing sessionId or pickerUri from Picker session.");
+      }
 
-      setPhotos(mapped);
-      setPhotosNextPageToken(data.nextPageToken || null);
-      setHasConnectedPhotos(true);
+      console.log("[Google Photos] Picker session:", sessionId, pickerUri);
 
-      toast({
-        title: "Google Photos Connected",
-        description: `Found ${mapped.length} photo(s).`,
-      });
+      // 2) Open the Picker UI in a new tab (browser usually handles this as a tab)
+      pickerWindow = window.open(pickerUri, "_blank", "noopener,noreferrer");
+
+      // 3) Poll backend until user has finished selecting media
+      const pollIntervalMs = 3000; // 3 seconds
+      const maxAttempts = 40; // ~2 minutes max
+
+      let pickedItems: GooglePhotoItem[] | null = null;
+
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+
+        const pollUrl = `${API_BASE_URL}/photos/picker/media?userId=${encodeURIComponent(
+          user.email
+        )}&sessionId=${encodeURIComponent(sessionId)}`;
+
+        console.log("[Google Photos] polling:", pollUrl);
+
+        const pollRes = await fetch(pollUrl);
+        const pollData = await pollRes.json();
+
+        if (!pollRes.ok) {
+          throw new Error(
+            typeof pollData.error === "string"
+              ? pollData.error
+              : `HTTP ${pollRes.status}`
+          );
+        }
+
+        // Backend returns { status: "pending", mediaItemsSet: false } while waiting
+        if (pollData.status === "pending" || pollData.mediaItemsSet === false) {
+          console.log("[Google Photos] Picker still pending…");
+          continue;
+        }
+
+        // User has finished picking; pollData.items is the picked media
+        const items = (pollData.items ?? []) as any[];
+
+        const mapped: GooglePhotoItem[] = items
+          .map((item) => {
+            const mediaFile = item.mediaFile || {};
+            return {
+              id: item.id as string,
+              baseUrl: (mediaFile.baseUrl as string) || "",
+              filename: mediaFile.filename as string | undefined,
+              mimeType: mediaFile.mimeType as string | undefined,
+            };
+          })
+          .filter((p) => p.baseUrl);
+
+        pickedItems = mapped;
+        setPhotos(mapped);
+        setPhotosNextPageToken(pollData.nextPageToken || null);
+        setHasConnectedPhotos(true);
+
+        console.log(
+          "[Google Photos] Picker returned",
+          mapped.length,
+          "item(s)"
+        );
+
+        // Close the Google Photos tab once we have the selection
+        if (pickerWindow && !pickerWindow.closed) {
+          pickerWindow.close();
+        }
+
+        // If exactly one photo was picked, mirror the "Upload from Device" flow:
+        // auto-analyze and navigate to Analysis page.
+        if (mapped.length === 1) {
+          toast({
+            title: "Analyzing selected photo…",
+            description: "Please wait while we process your image.",
+          });
+          await handleAnalyzeGooglePhoto(mapped[0]);
+        } else if (mapped.length > 1) {
+          toast({
+            title: "Google Photos Connected",
+            description: `You selected ${mapped.length} photo(s).`,
+          });
+        }
+
+        break;
+      }
+
+      if (!pickedItems || pickedItems.length === 0) {
+        throw new Error(
+          "No photos were selected in Google Photos for this session."
+        );
+      }
     } catch (err: any) {
       console.error("Google Photos connect error:", err);
       toast({
         title: "Google Photos error",
-        description: err?.message ?? "Failed to connect Google Photos.",
+        description:
+          err?.message ?? "Failed to connect to Google Photos Picker.",
         variant: "destructive",
       });
     } finally {
@@ -240,6 +407,7 @@ const Upload: React.FC = () => {
 
   /**
    * Optional: load the next page of Google Photos (if available).
+   * (Currently unused because we auto-analyze the first selection.)
    */
   const handleLoadMorePhotos = async () => {
     if (!user || !photosNextPageToken) return;
@@ -293,9 +461,9 @@ const Upload: React.FC = () => {
   };
 
   /**
-   * Analyze a chosen Google Photos image:
-   *  1) /photos/download -> get base64 + metadata
-   *  2) /analyze          -> run your detector
+   * Analyze a Google Photos image:
+   *  1) /photos/picker/download -> get base64 + metadata
+   *  2) /analyze                 -> run your detector
    */
   const handleAnalyzeGooglePhoto = async (photo: GooglePhotoItem) => {
     if (!user) {
@@ -313,15 +481,27 @@ const Upload: React.FC = () => {
 
       toast({
         title: "Analyzing Google photo…",
-        description: "Downloading and processing the selected image.",
+        description: "Processing the selected image.",
       });
 
-      // 1) Download image bytes as base64 from backend
-      const downloadUrl = `${API_BASE_URL}/photos/download?userId=${encodeURIComponent(
-        user.email
-      )}&mediaItemId=${encodeURIComponent(photo.id)}`;
+      // 1) Download image bytes as base64 from backend using Picker baseUrl
+      const downloadRes = await fetch(
+        `${API_BASE_URL}/photos/picker/download`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            // backend resolves user by email in Firestore
+            userId: user.email,
+            baseUrl: photo.baseUrl,
+            filename: photo.filename,
+            mimeType: photo.mimeType,
+          }),
+        }
+      );
 
-      const downloadRes = await fetch(downloadUrl);
       const downloadData = await downloadRes.json();
 
       if (!downloadRes.ok) {
@@ -336,7 +516,10 @@ const Upload: React.FC = () => {
         downloadData.filename || photo.filename || "google-photo.jpg";
       const mimeType: string =
         downloadData.mimeType || photo.mimeType || "image/jpeg";
-      const imageBase64: string = downloadData.imageBase64;
+      let imageBase64: string = downloadData.imageBase64;
+
+      // 🔹 New: shrink/compress very large images so Firestore field size isn’t exceeded
+      imageBase64 = await downscaleBase64IfNeeded(imageBase64, mimeType);
 
       const imageId = generateImageId();
 
@@ -349,7 +532,8 @@ const Upload: React.FC = () => {
         body: JSON.stringify({
           userId: user.id,
           imageId,
-          source: "google-photos",
+          // Use same source value as upload so dashboard cards stay consistent
+          source: "upload",
           filename,
           mimeType,
           imageBase64,
@@ -497,7 +681,7 @@ const Upload: React.FC = () => {
                   onClick={handleGooglePhotosConnect}
                   disabled={isLoadingPhotos || isAnalyzingFromPhotos}
                 >
-                  {isLoadingPhotos ? "Connecting…" : "Connect Account"}
+                  {isLoadingPhotos ? "Analyzing…" : "Connect Account"}
                 </Button>
 
                 <div className="mt-2 mb-4 p-4 bg-muted/50 rounded-lg text-xs text-muted-foreground">
@@ -506,8 +690,9 @@ const Upload: React.FC = () => {
                   protected with industry-standard encryption.
                 </div>
 
-                {/* Photo grid */}
-                {photos.length > 0 && (
+                {/* Grid is commented out because we now auto-analyze the selected photo.
+                    Leaving this here in case you want a manual selection grid later. */}
+                {/* {photos.length > 0 && (
                   <div className="mt-2">
                     <p className="text-sm font-medium mb-2">
                       Choose a Google photo to analyze:
@@ -543,7 +728,7 @@ const Upload: React.FC = () => {
                       </Button>
                     )}
                   </div>
-                )}
+                )} */}
 
                 {hasConnectedPhotos && photos.length === 0 && (
                   <p className="text-xs text-muted-foreground mt-2">

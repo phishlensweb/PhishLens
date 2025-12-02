@@ -1,5 +1,3 @@
-
-// src/pages/Analysis.tsx
 import type React from "react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
@@ -29,6 +27,11 @@ import {
 
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
+
+const BACKEND_BASE =
+  import.meta.env.MODE === "development"
+    ? "/api"
+    : import.meta.env.VITE_API_BASE_URL;
 
 type Vertex = { x?: number; y?: number };
 
@@ -89,7 +92,8 @@ const Analysis = () => {
 
     const load = async () => {
       try {
-        const res = await fetch(`/api/results/${id}`);
+        const url = `${BACKEND_BASE}/results/${id}`;
+        const res = await fetch(url);
 
         if (res.ok) {
           const data = await res.json();
@@ -97,10 +101,13 @@ const Analysis = () => {
           setAnalysis({
             imageId: id,
             filename: data.filename ?? id,
-            risk: data.gemini?.risk ?? 0,
-            reason: data.gemini?.reason ?? "",
-            recommendedAction: data.gemini?.recommendedAction ?? "Review",
-            image: data.image_url ?? "",
+            risk: data.gemini?.risk ?? data.risk ?? 0,
+            reason: data.gemini?.reason ?? data.reason ?? "",
+            recommendedAction:
+              data.gemini?.recommendedAction ??
+              data.recommendedAction ??
+              "Review",
+            image: data.image_url ?? data.url ?? "",
             vision: data.vision ?? null,
             metrics: data.metrics ?? defaultMetrics,
           });
@@ -169,7 +176,6 @@ const Analysis = () => {
   const RiskIcon = riskMeta.icon;
 
   const handleSave = async () => {
-    // Results are already persisted; this is just UX feedback.
     setSaving(true);
     try {
       toast({
@@ -190,6 +196,26 @@ const Analysis = () => {
   };
 
   const faces = analysis?.vision?.faces ?? [];
+
+  // --- Parse "risk:", "reasoning:", "recommendedAction:" from analysis.reason ---
+  let riskText = "";
+  let reasoningText = analysis?.reason ?? "";
+
+  if (analysis?.reason) {
+    const riskMatch = analysis.reason.match(
+      /risk:\s*([^\n]+?)(?=reasoning:|$)/i
+    );
+    if (riskMatch) {
+      riskText = riskMatch[1].trim();
+    }
+
+    const reasoningMatch = analysis.reason.match(
+      /reasoning:\s*([\s\S]+?)(?=recommendedAction:|recommended action:|$)/i
+    );
+    if (reasoningMatch) {
+      reasoningText = reasoningMatch[1].trim();
+    }
+  }
 
   // Compute normalized face box style
   const getFaceBoxStyle = (face: Face): React.CSSProperties => {
@@ -218,14 +244,11 @@ const Analysis = () => {
   // For the noise overlay, choose face heatmap color based on risk
   const getRiskHeatClass = () => {
     if (riskScore < 30) {
-      // low risk → green
       return "bg-emerald-400/30 border-emerald-400 shadow-[0_0_25px_rgba(16,185,129,0.7)]";
     }
     if (riskScore < 70) {
-      // medium → yellow/amber
       return "bg-amber-400/30 border-amber-400 shadow-[0_0_25px_rgba(245,158,11,0.7)]";
     }
-    // high → red
     return "bg-red-500/30 border-red-500 shadow-[0_0_25px_rgba(239,68,68,0.7)]";
   };
 
@@ -293,7 +316,6 @@ const Analysis = () => {
                   </TabsList>
                 </CardHeader>
 
-                {/* Vision Overlay with dashed boxes + dots */}
                 <TabsContent value="vision">
                   <div className="relative flex justify-center bg-muted">
                     {analysis.image ? (
@@ -315,10 +337,7 @@ const Analysis = () => {
                               className="absolute pointer-events-none"
                               style={boxStyle}
                             >
-                              {/* Dashed neon border */}
                               <div className="w-full h-full rounded-2xl border-[3px] border-emerald-400 border-dashed shadow-[0_0_25px_rgba(16,185,129,0.7)]" />
-
-                              {/* Glowing corner dots */}
                               <span className="absolute w-3 h-3 rounded-full bg-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.9)] -top-1 -left-1" />
                               <span className="absolute w-3 h-3 rounded-full bg-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.9)] -top-1 -right-1" />
                               <span className="absolute w-3 h-3 rounded-full bg-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.9)] -bottom-1 -left-1" />
@@ -335,7 +354,6 @@ const Analysis = () => {
                   </div>
                 </TabsContent>
 
-                {/* Noise Overlay: dimmed image + risk-colored face heat */}
                 <TabsContent value="noise">
                   <div className="relative flex justify-center bg-muted">
                     {analysis.image ? (
@@ -375,7 +393,6 @@ const Analysis = () => {
 
           {/* RIGHT SIDEBAR */}
           <div className="space-y-6">
-            {/* RISK */}
             <Card>
               <CardHeader>
                 <CardTitle className="text-muted-foreground text-sm">
@@ -400,9 +417,20 @@ const Analysis = () => {
                 {analysis.reason && (
                   <div className="mt-4">
                     <h4 className="font-semibold mb-1">Analysis Details</h4>
-                    <p className="text-sm text-muted-foreground whitespace-pre-line">
-                      {analysis.reason}
-                    </p>
+                    <ul className="list-disc pl-5 text-sm text-muted-foreground space-y-1">
+                      {riskText && (
+                        <li>
+                          <span className="font-semibold">Risk score:</span>{" "}
+                          {riskText}
+                        </li>
+                      )}
+                      {reasoningText && (
+                        <li>
+                          <span className="font-semibold">Reasoning:</span>{" "}
+                          {reasoningText}
+                        </li>
+                      )}
+                    </ul>
                   </div>
                 )}
 
@@ -415,46 +443,7 @@ const Analysis = () => {
               </CardContent>
             </Card>
 
-            {/* FORENSICS */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm text-muted-foreground">
-                  Noise / Forensics Metrics
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-1">
-                      ELA Mean
-                    </p>
-                    <p className="font-bold">{analysis.metrics.elaMean}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-1">
-                      ELA StdDev
-                    </p>
-                    <p className="font-bold">{analysis.metrics.elaStdDev}</p>
-                  </div>
-
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-1">
-                      ROI Δ (Face vs BG)
-                    </p>
-                    <p className="font-bold">{analysis.metrics.roiDelta}</p>
-                  </div>
-
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-1">
-                      Block Boundary Energy
-                    </p>
-                    <p className="font-bold">
-                      {analysis.metrics.blockBoundaryEnergy}
-                    </p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+            {/* Metrics card left commented out – you can re-enable once you want it again */}
           </div>
         </div>
       </div>

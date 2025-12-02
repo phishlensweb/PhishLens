@@ -6,8 +6,26 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
+// const BACKEND_BASE =
+//  import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8080";
+
+ // src/pages/Auth.tsx
+
+// Use the dev proxy in development, and the full Cloud Run URL in production
+
+// const BACKEND_BASE =
+//   import.meta.env.MODE === "development"
+//     ? "/api"
+//     : import.meta.env.VITE_API_BASE_URL;
+
+// if (!BACKEND_BASE) {
+//   console.error("VITE_API_BASE_URL is not set for this build.");
+// }
+
 const BACKEND_BASE =
-  import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8080";
+  import.meta.env.MODE === "development"
+    ? "http://localhost:8080"
+    : "https://phishlens-backend-1087775975982.us-west1.run.app";
 
 const Auth = () => {
   const { user, signInMock } = useAuth();
@@ -49,16 +67,16 @@ const Auth = () => {
             <span>Continue with Google</span>
           </Button>
 
-          <div className="text-xs text-muted-foreground text-center">
+          {/* <div className="text-xs text-muted-foreground text-center">
             For local testing, you can also use a mock login:
-          </div>
-          <Button
+          </div> */}
+          {/* <Button
             variant="outline"
             className="w-full text-xs"
             onClick={handleMockSignIn}
           >
             Use mock account
-          </Button>
+          </Button> */}
         </CardContent>
       </Card>
     </div>

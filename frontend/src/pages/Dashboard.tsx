@@ -1,5 +1,9 @@
 // src/pages/Dashboard.tsx
 
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { format } from "date-fns";
+
 import { Navigation } from "@/components/Navigation";
 import {
   Card,
@@ -11,11 +15,24 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Upload, Calendar, ImageIcon } from "lucide-react";
-import { Link } from "react-router-dom";
-import { useEffect, useState } from "react";
 import { useToast } from "@/hooks/use-toast";
-import { format } from "date-fns";
 import { useAuth } from "@/contexts/AuthContext";
+
+// // 🔑 Single source for backend URL – works in local & Cloud Run
+// const BACKEND_BASE =
+//   import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8080";
+
+// const BACKEND_BASE =
+//   import.meta.env.MODE === "development"
+//     ? "/api"
+//     : import.meta.env.VITE_API_BASE_URL;
+
+const BACKEND_BASE =
+  import.meta.env.MODE === "development"
+    ? "http://localhost:8080"
+    : "https://phishlens-backend-1087775975982.us-west1.run.app";
+
+  
 
 interface Analysis {
   id: string;
@@ -50,7 +67,7 @@ const Dashboard = () => {
   const { user } = useAuth();
 
   useEffect(() => {
-    // If user is not signed in, just show empty state (and stop loading)
+    // If not logged in, show empty state
     if (!user) {
       setAnalyses([]);
       setLoading(false);
@@ -61,7 +78,10 @@ const Dashboard = () => {
       try {
         setLoading(true);
 
-        const url = `/api/results?userId=${encodeURIComponent(user.email)}`;
+        const url = `${BACKEND_BASE}/results?userId=${encodeURIComponent(
+          user.email
+        )}`;
+
         const res = await fetch(url);
 
         if (!res.ok) {
@@ -192,9 +212,7 @@ const Dashboard = () => {
                     </div>
                     <Button asChild className="w-full" variant="outline">
                       <Link
-                        to={`/analysis/${
-                          analysis.imageId || analysis.id
-                        }`}
+                        to={`/analysis/${analysis.imageId || analysis.id}`}
                       >
                         View analysis
                       </Link>

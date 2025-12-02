@@ -31,9 +31,12 @@ router.get("/google", (_req, res) => {
     "email",
 
     // 🔥 REQUIRED – full Google Photos access via REST
-  //  "https://www.googleapis.com/auth/photoslibrary",
-    "https://www.googleapis.com/auth/photoslibrary.readonly",
-  //  "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
+   //  "https://www.googleapis.com/auth/photoslibrary",
+   // "https://www.googleapis.com/auth/photoslibrary.readonly",
+   // "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
+
+     // ✅ New required scope for Google Photos Picker API
+    "https://www.googleapis.com/auth/photospicker.mediaitems.readonly",
   ];
   
 

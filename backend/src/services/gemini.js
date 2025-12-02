@@ -127,8 +127,8 @@ ${JSON.stringify(vision, null, 2)}
   const risk = riskMatch ? Math.min(parseInt(riskMatch[1], 10), 100) : 50;
 
   let recommendedAction = 'review';
-  if (/\bignore\b/i.test(text)) recommendedAction = 'ignore';
-  else if (/\bflag\b/i.test(text)) recommendedAction = 'flag';
+  if (/\bignore\b/i.test(text)) recommendedAction = 'Ignore';
+  else if (/\bflag\b/i.test(text)) recommendedAction = 'Flag';
 
   return {
     risk,
